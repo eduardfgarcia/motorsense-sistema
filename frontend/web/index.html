@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="/">
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Neurofit</title>
+  
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <script>
+  // Almacenamiento global de instancias activas
+  const _activePipes = {};
+
+  /**
+   * Inicia el flujo completo: permisos → espera del contenedor → MediaPipe.
+   * @param {string} viewType - Identificador interno.
+   * @param {string} callbackName - Nombre de la función global que Dart expuso.
+   */
+  async function startMediaPipe(viewType, callbackName) {
+    console.log(`[MotorSense] 🚀 startMediaPipe llamado con viewType="${viewType}", callback="${callbackName}"`);
+
+    // 1. SOLICITAR PERMISOS DE CÁMARA INMEDIATAMENTE
+    let stream = null;
+    try {
+      console.log('[MotorSense] 🎥 Solicitando permisos de cámara...');
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'user' }
+      });
+      console.log('[MotorSense] ✅ Permiso de cámara concedido. Stream activo.');
+    } catch (err) {
+      console.error('[MotorSense] ❌ Error al obtener getUserMedia:', err.name, err.message);
+      const cb = window[callbackName];
+      if (typeof cb === 'function') cb(null);
+      return;
+    }
+
+    // 2. ESPERAR ACTIVAMENTE AL DIV FIJO #mediapipe-camera-container
+    const container = await waitForContainerFixed('mediapipe-camera-container');
+    if (!container) {
+      console.error('[MotorSense] ❌ No se encontró el div #mediapipe-camera-container. Abortando.');
+      stream.getTracks().forEach(track => track.stop());
+      const cb = window[callbackName];
+      if (typeof cb === 'function') cb(null);
+      return;
+    }
+
+    // 3. INYECTAR VIDEO Y ARRANCAR MEDIAPIPE
+    try {
+      console.log('[MotorSense] 🧹 Limpiando contenedor e inyectando video...');
+      container.innerHTML = ''; // Limpiar
+
+      const video = document.createElement('video');
+      video.setAttribute('playsinline', '');
+      video.setAttribute('autoplay', '');
+      video.setAttribute('muted', '');
+      video.style.width = '100%';
+      video.style.height = '100%';
+      video.style.objectFit = 'cover';
+      video.style.display = 'block';
+      video.srcObject = stream;
+      video.play().catch(e => console.warn('[MotorSense] ⚠️ play() falló:', e));
+
+      container.appendChild(video);
+      console.log('[MotorSense] 🖼️ Video añadido al contenedor.');
+
+      // 4. VERIFICAR DISPONIBILIDAD DE MEDIAPIPE
+      if (typeof Hands === 'undefined') {
+        throw new Error('MediaPipe Hands no está definido. Asegúrate de que la CDN se cargó correctamente.');
+      }
+      if (typeof Camera === 'undefined') {
+        throw new Error('MediaPipe Camera utils no está definido. Revisa la CDN de camera_utils.');
+      }
+
+      console.log('[MotorSense] 🧠 Inicializando MediaPipe Hands...');
+      const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      });
+
+      hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.5
+      });
+
+      hands.onResults((results) => {
+        const callbackFn = window[callbackName];
+        if (typeof callbackFn !== 'function') return;
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+          const landmarks = results.multiHandLandmarks[0];
+          const normalized = landmarks.map(l => ({ x: l.x, y: l.y }));
+          callbackFn(normalized);
+        } else {
+          callbackFn(null);
+        }
+      });
+
+      const camera = new Camera(video, {
+        onFrame: async () => {
+          await hands.send({ image: video });
+        },
+        width: 640,
+        height: 480
+      });
+      await camera.start();
+
+      // Guardar referencia para detener después
+      _activePipes[viewType] = { stream, hands, camera, video };
+
+      // Enviar el rect inicial cuando el video esté listo
+      video.addEventListener('loadedmetadata', () => {
+        sendVideoRectToDart(viewType);
+      });
+
+      console.log('[MotorSense] ✅ MediaPipe Hands está procesando frames en tiempo real.');
+    } catch (err) {
+      console.error('[MotorSense] ❌ Error en la configuración de MediaPipe:', err);
+      stream.getTracks().forEach(track => track.stop());
+      const cb = window[callbackName];
+      if (typeof cb === 'function') cb(null);
+    }
+  }
+
+  /**
+   * Espera activa hasta que aparezca el div con el ID fijo.
+   * @param {string} id - ID del elemento.
+   * @returns {Promise<Element|null>}
+   */
+  function waitForContainerFixed(id) {
+    return new Promise((resolve) => {
+      const selector = `#${id}`;
+      console.log(`[MotorSense] 🔍 Buscando contenedor con selector: ${selector}`);
+      let attempts = 0;
+      const maxAttempts = 25; // 25 * 100ms = 2.5 segundos
+      const interval = setInterval(() => {
+        attempts++;
+        const container = document.querySelector(selector);
+        if (container) {
+          clearInterval(interval);
+          console.log(`[MotorSense] ✅ Contenedor #${id} encontrado tras ${attempts} intento(s).`);
+          resolve(container);
+        } else if (attempts >= maxAttempts) {
+          clearInterval(interval);
+          console.error(`[MotorSense] ❌ Tiempo agotado. No se encontró #${id}`);
+          resolve(null);
+        }
+      }, 100);
+    });
+  }
+
+  /**
+   * Detiene completamente MediaPipe, libera la cámara y limpia el DOM.
+   * @param {string} viewType - Identificador de la instancia.
+   */
+  function stopMediaPipe(viewType) {
+    console.log(`[MotorSense] 🛑 Deteniendo MediaPipe para viewType="${viewType}"`);
+    const instance = _activePipes[viewType];
+    if (instance) {
+      if (instance.camera) {
+        instance.camera.stop();
+        console.log('[MotorSense] ⏹️ Camera.stop() ejecutado.');
+      }
+      if (instance.stream) {
+        instance.stream.getTracks().forEach(track => {
+          track.stop();
+          console.log('[MotorSense] 📷 Track detenido:', track.kind);
+        });
+      }
+      if (instance.video) {
+        instance.video.pause();
+        instance.video.srcObject = null;
+      }
+      const container = document.getElementById('mediapipe-camera-container');
+      if (container) {
+        container.innerHTML = '';
+        console.log('[MotorSense] 🗑️ Contenedor #mediapipe-camera-container limpiado.');
+      }
+      delete _activePipes[viewType];
+      console.log('[MotorSense] ✅ Instancia eliminada correctamente.');
+    } else {
+      console.warn('[MotorSense] ⚠️ No se encontró ninguna instancia activa para detener.');
+    }
+  }
+
+  // ============================================================
+  // FUNCIONES PARA SINCRONIZAR EL ÁREA VISIBLE DEL VÍDEO
+  // ============================================================
+
+  /**
+   * Calcula el rectángulo que ocupa realmente el vídeo dentro del contenedor
+   * debido al object-fit: cover.
+   */
+  function getVideoContentRect(container, video) {
+    const containerWidth = container.clientWidth;
+    const containerHeight = container.clientHeight;
+    const videoWidth = video.videoWidth;
+    const videoHeight = video.videoHeight;
+
+    if (!videoWidth || !videoHeight) return null;
+
+    const containerAspect = containerWidth / containerHeight;
+    const videoAspect = videoWidth / videoHeight;
+
+    let displayedWidth, displayedHeight, offsetX, offsetY;
+
+    if (containerAspect > videoAspect) {
+      // Contenedor más ancho → recorte horizontal
+      displayedHeight = containerHeight;
+      displayedWidth = containerHeight * videoAspect;
+      offsetX = (containerWidth - displayedWidth) / 2;
+      offsetY = 0;
+    } else {
+      // Contenedor más alto → recorte vertical
+      displayedWidth = containerWidth;
+      displayedHeight = containerWidth / videoAspect;
+      offsetX = 0;
+      offsetY = (containerHeight - displayedHeight) / 2;
+    }
+
+    return { offsetX, offsetY, displayedWidth, displayedHeight };
+  }
+
+  /**
+   * Envía el rect actual a Dart a través del callback global.
+   */
+  function sendVideoRectToDart(viewType) {
+    const container = document.getElementById('mediapipe-camera-container');
+    const instance = _activePipes[viewType];
+    if (!container || !instance || !instance.video) return;
+
+    const rect = getVideoContentRect(container, instance.video);
+    if (rect && window.onVideoRectChanged) {
+      window.onVideoRectChanged(rect);
+    }
+  }
+
+  // Actualizar el rect cuando la ventana cambie de tamaño
+  window.addEventListener('resize', () => {
+    sendVideoRectToDart('mediapipe-hand-tracker');
+  });
+
+  // Exponer funciones globales
+  window.startMediaPipe = startMediaPipe;
+  window.stopMediaPipe = stopMediaPipe;
+  console.log('[MotorSense] 📌 Funciones startMediaPipe / stopMediaPipe / videoRect registradas globalmente.');
+</script>
+
+  <script src="main.dart.js" type="application/javascript"></script>
+</body>
+</html>
