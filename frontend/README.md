@@ -22,7 +22,7 @@ MotorSense es una aplicación web desarrollada en Flutter que utiliza MediaPipe 
 
 ## Instalación
 1. Clona el repositorio:
-   `git clone https://github.com/tu_usuario/motorsense-sistema.git`
+   `git clone https://github.com/eduardfgarcia/motorsense-sistema.git`
 2. Instala las dependencias:
    `flutter pub get`
 3. Ejecuta la aplicación:
