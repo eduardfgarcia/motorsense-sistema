@@ -5,6 +5,7 @@ MotorSense es un sistema de ingeniería modular diseñado para el diagnóstico d
 ## Desarrolladores
 * **Eduard García**
 * **Eddy Gómez**
+*  Cuarto Semestre - Ing Software - UDEC
 
 ---
 
