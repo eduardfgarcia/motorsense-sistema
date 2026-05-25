@@ -35,7 +35,7 @@ Siga estos pasos en orden estricto para levantar el sistema completo en cualquie
 ### 1. Clonar el Repositorio
 Abra una terminal y descargue el código fuente:
 `
-git clone <URL_DE_TU_REPOSITORIO_DE_GITHUB>
+git clone https://github.com/eduardfgarcia/motorsense-sistema.git
 cd motorsense-sistema-main`
 
 ## 2. Configuración del Backend (Django)
